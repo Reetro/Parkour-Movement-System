@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Components/TimelineComponent.h"
 #include "GameFramework/Character.h"
 #include "ParkourCharacter.generated.h"
 
@@ -26,10 +27,29 @@ public:
   UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Camera)
   float BaseLookUpRate;
 
-protected:
+  UFUNCTION(BlueprintCallable, Category = "Movement Functions")
+  void ParkourJump();
+  UFUNCTION(BlueprintCallable, Category = "Movement Functions")
+  void ParkourJumpStop();
+  /* Returns the default gravity scale */
+  UFUNCTION(BlueprintPure, Category = "Movement Functions")
+  const float GetDefaultGravityScale();
+  /* Reads the value of bJumpingOverLedge */
+  UFUNCTION(BlueprintPure, Category = "Movement Functions")
+  const bool GetJumpingOverLedge();
+  /* Called when player climbs over a ledge */
+  UFUNCTION(BlueprintImplementableEvent, Category = "Movement Events")
+  void OnLedgeClimb();
+  /* Called when player is done climbing ledge */
+  UFUNCTION(BlueprintImplementableEvent, Category = "Movement Events")
+  void OnLedgeClimbStop();
+  /* Checks to see if player is on top of a ledge the top of a ledge */
+  UFUNCTION(BlueprintCallable, Category = "Movement Events")
+  bool IsPlayerOnTopOfLedge();
 
-  /** Resets HMD orientation in VR. */
-  void OnResetVR();
+  virtual void Tick(float DeltaSeconds) override;
+
+protected:
 
   /** Called for forwards/backward input */
   void MoveForward(float Value);
@@ -49,11 +69,18 @@ protected:
    */
   void LookUpAtRate(float Rate);
 
-  /** Handler for when a touch input begins. */
-  void TouchStarted(ETouchIndex::Type FingerIndex, FVector Location);
+  virtual void BeginPlay() override;
 
-  /** Handler for when a touch input stops. */
-  void TouchStopped(ETouchIndex::Type FingerIndex, FVector Location);
+  FTimeline LedgeTimeline;
+
+  UPROPERTY()
+  UCurveFloat* FloatCurve;
+
+  UFUNCTION()
+  void LedgeTimelineCallback(float val);
+
+  UFUNCTION()
+  void LedgeTimelineFinishedCallback();
 
 protected:
   // APawn interface
@@ -63,4 +90,12 @@ protected:
 public:
   /** Returns FollowCamera subobject **/
   FORCEINLINE class UCameraComponent* GetFollowCamera() const { return FollowCamera; }
+
+private:
+
+  float DefaultGravityScale;
+
+  bool bJumpingOverLedge;
+
+  bool bReachedTopOfLedge;
 };

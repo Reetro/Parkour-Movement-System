@@ -2,12 +2,14 @@
 
 
 #include "ParkourCharacter.h"
-#include "HeadMountedDisplayFunctionLibrary.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Engine/SkeletalMeshSocket.h"
 #include "Components/InputComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
+#include "DrawDebugHelpers.h"
+#include "UObject/ConstructorHelpers.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 
@@ -44,7 +46,23 @@ AParkourCharacter::AParkourCharacter()
 
   // Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character) 
   // are set in the derived blueprint asset named ParkourCharacterBP (to avoid direct content references in C++)
+
+  // Get Jump Timeline curve
+  static ConstructorHelpers::FObjectFinder<UCurveFloat> Curve(TEXT("/ParkourMovementSystem/Character/JumpCurve"));
+  check(Curve.Succeeded());
+
+  FloatCurve = Curve.Object;
 }
+
+void AParkourCharacter::BeginPlay()
+{
+  Super::BeginPlay();
+
+  GetCharacterMovement()->SetPlaneConstraintEnabled(true);
+
+  DefaultGravityScale = GetCharacterMovement()->GravityScale;
+}
+
 
 // Called to bind functionality to input
 void AParkourCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -53,8 +71,8 @@ void AParkourCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 
   // Set up gameplay key bindings
   check(PlayerInputComponent);
-  PlayerInputComponent->BindAction("Jump", IE_Pressed, this, &ACharacter::Jump);
-  PlayerInputComponent->BindAction("Jump", IE_Released, this, &ACharacter::StopJumping);
+  PlayerInputComponent->BindAction("Jump", IE_Pressed, this, &AParkourCharacter::ParkourJump);
+  PlayerInputComponent->BindAction("Jump", IE_Released, this, &AParkourCharacter::ParkourJumpStop);
 
   PlayerInputComponent->BindAxis("MoveForward", this, &AParkourCharacter::MoveForward);
   PlayerInputComponent->BindAxis("MoveRight", this, &AParkourCharacter::MoveRight);
@@ -66,28 +84,6 @@ void AParkourCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
   PlayerInputComponent->BindAxis("TurnRate", this, &AParkourCharacter::TurnAtRate);
   PlayerInputComponent->BindAxis("LookUp", this, &APawn::AddControllerPitchInput);
   PlayerInputComponent->BindAxis("LookUpRate", this, &AParkourCharacter::LookUpAtRate);
-
-  // handle touch devices
-  PlayerInputComponent->BindTouch(IE_Pressed, this, &AParkourCharacter::TouchStarted);
-  PlayerInputComponent->BindTouch(IE_Released, this, &AParkourCharacter::TouchStopped);
-
-  // VR headset functionality
-  PlayerInputComponent->BindAction("ResetVR", IE_Pressed, this, &AParkourCharacter::OnResetVR);
-}
-
-void AParkourCharacter::OnResetVR()
-{
-  UHeadMountedDisplayFunctionLibrary::ResetOrientationAndPosition();
-}
-
-void AParkourCharacter::TouchStarted(ETouchIndex::Type FingerIndex, FVector Location)
-{
-  Jump();
-}
-
-void AParkourCharacter::TouchStopped(ETouchIndex::Type FingerIndex, FVector Location)
-{
-  StopJumping();
 }
 
 void AParkourCharacter::TurnAtRate(float Rate)
@@ -129,4 +125,108 @@ void AParkourCharacter::MoveRight(float Value)
     // add movement in that direction
     AddMovementInput(Direction, Value);
   }
+}
+
+void AParkourCharacter::ParkourJump()
+{
+  Jump();
+
+  FVector TraceStart = FollowCamera->GetComponentLocation();
+  FVector TraceEnd = FollowCamera->GetForwardVector() * 50 + TraceStart;
+  FHitResult OutHit;
+  FCollisionQueryParams CollisionParams;
+
+  if (GetWorld()->LineTraceSingleByChannel(OutHit, TraceStart, TraceEnd, ECC_Visibility, CollisionParams))
+  {
+    if (OutHit.bBlockingHit)
+    {
+      OnLedgeClimb();
+      bJumpingOverLedge = true;
+      GetCharacterMovement()->SetPlaneConstraintNormal(FVector(1, 1, 0));
+      GetCharacterMovement()->GravityScale = 0;
+
+      FOnTimelineFloat LedgeTimelineCallback;
+      FOnTimelineEventStatic LedgeTimelineFinishedCallback;
+
+      if (FloatCurve)
+      {
+        LedgeTimelineCallback.BindUFunction(this, FName("LedgeTimelineCallback"));
+        LedgeTimelineFinishedCallback.BindUFunction(this, FName("LedgeTimelineFinishedCallback"));
+        LedgeTimeline.SetTimelineFinishedFunc(LedgeTimelineFinishedCallback);
+        LedgeTimeline.AddInterpFloat(FloatCurve, LedgeTimelineCallback);
+        LedgeTimeline.SetLooping(false);
+        LedgeTimeline.SetPlayRate(1.0f);
+        LedgeTimeline.PlayFromStart();
+      }
+    }
+  }
+}
+
+void AParkourCharacter::Tick(float DeltaSeconds)
+{
+  Super::Tick(DeltaSeconds);
+
+  LedgeTimeline.TickTimeline(DeltaSeconds);
+}
+
+void AParkourCharacter::ParkourJumpStop()
+{
+  LedgeTimeline.Stop();
+  GetCharacterMovement()->SetPlaneConstraintNormal(FVector(0, 0, 0));
+  GetCharacterMovement()->GravityScale = GetDefaultGravityScale();
+  bJumpingOverLedge = false;
+  OnLedgeClimbStop();
+}
+
+// Ledge Climbing functions
+bool AParkourCharacter::IsPlayerOnTopOfLedge()
+{
+  FVector TraceStart = GetMesh()->GetSocketLocation(FName("ball_r"));
+
+  FVector TraceEnd = GetMesh()->GetSocketTransform(FName("ball_r")).GetRotation().GetForwardVector() * 50 + TraceStart;
+
+  FHitResult OutHit;
+  FCollisionQueryParams CollisionParams;
+
+  if (GetWorld()->LineTraceSingleByChannel(OutHit, TraceStart, TraceEnd, ECC_Visibility, CollisionParams))
+  {
+    if (!OutHit.bBlockingHit)
+    {
+      return true;
+    }
+    else
+    {
+      return false;
+    }
+  }
+  else
+  {
+    return false;
+  }
+}
+
+void AParkourCharacter::LedgeTimelineCallback(float val)
+{
+  LaunchCharacter(FVector(0, 0, 250), false, true);
+  
+  if (IsPlayerOnTopOfLedge())
+  {
+    LedgeTimeline.Stop();
+    ParkourJumpStop();
+  }
+}
+
+void AParkourCharacter::LedgeTimelineFinishedCallback()
+{
+  ParkourJumpStop();
+}
+
+const float AParkourCharacter::GetDefaultGravityScale()
+{
+  return DefaultGravityScale;
+}
+
+const bool AParkourCharacter::GetJumpingOverLedge()
+{
+  return bJumpingOverLedge;
 }
