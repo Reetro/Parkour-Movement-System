@@ -43,7 +43,7 @@ AParkourCharacter::AParkourCharacter()
   FollowCamera->bUsePawnControlRotation = true;
 
   // Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character) 
-  // are set in the derived blueprint asset named MyCharacter (to avoid direct content references in C++)
+  // are set in the derived blueprint asset named ParkourCharacterBP (to avoid direct content references in C++)
 }
 
 // Called to bind functionality to input
